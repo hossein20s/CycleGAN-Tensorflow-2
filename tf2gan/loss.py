@@ -1,4 +1,9 @@
+import logging
+
 import tensorflow as tf
+
+logging.config.fileConfig(fname='log.conf')
+logger = logging.getLogger('dev')
 
 
 def get_gan_losses_fn():
@@ -111,5 +116,7 @@ def gradient_penalty(f, real, fake, mode):
         gp = _gradient_penalty(f, real)
     elif mode == 'wgan-gp':
         gp = _gradient_penalty(f, real, fake)
+    else:
+        logger.error("mode {} is not defines".format(mode))
 
     return gp
