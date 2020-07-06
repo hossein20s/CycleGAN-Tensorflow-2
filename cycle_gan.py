@@ -44,16 +44,17 @@ class CycleGAN:
                  cycle_loss_weight=0.0,
                  identity_loss_weight=0.0,
                  beta_1=0.5,
-                 color_depth=1):
+                 color_depth=1,
+                 progrssive=False):
         logging.config.fileConfig(fname='log.conf')
         self.logger = logging.getLogger('dev')
 
         if batch_size == 0:
             batch_size = 1  # later figure out what to do
 
-        output_dataset_dir = py.join(output_dir, dataset)
-        py.mkdir(output_dataset_dir)
-        py.args_to_yaml(py.join(output_dataset_dir, 'settings.yml'), Namespace(
+        self.output_dataset_dir = py.join(output_dir, dataset)
+        py.mkdir(self.output_dataset_dir)
+        py.args_to_yaml(py.join(self.output_dataset_dir, 'settings.yml'), Namespace(
             epochs=epochs,
             epoch_decay=epoch_decay,
             pool_size=pool_size,
@@ -71,9 +72,10 @@ class CycleGAN:
             cycle_loss_weight=cycle_loss_weight,
             identity_loss_weight=identity_loss_weight,
             beta_1=beta_1,
-            color_depth=color_depth)
+            color_depth=color_depth,
+            progressive=progrssive)
                         )
-        self.sample_dir = py.join(output_dataset_dir, 'samples_training')
+        self.sample_dir = py.join(self.output_dataset_dir, 'samples_training')
         py.mkdir(self.sample_dir)
 
         self.epochs = epochs
@@ -84,42 +86,25 @@ class CycleGAN:
         self.cycle_loss_weight = cycle_loss_weight
         self.identity_loss_weight = identity_loss_weight
         self.color_depth = color_depth
+        self.adversarial_loss_mode = adversarial_loss_mode
+        self.batch_size = batch_size
+        self.beta_1 = beta_1
+        self.color_depth = color_depth
+        self.dataset = dataset
+        self.datasets_dir = datasets_dir
+        self.image_ext = image_ext
+        self.progrssive = progrssive
+        self.lr = lr
 
-        A_img_paths = py.glob(py.join(datasets_dir, dataset, 'trainA'), '*.{}'.format(image_ext))
-        B_img_paths = py.glob(py.join(datasets_dir, dataset, 'trainB'), '*.{}'.format(image_ext))
-        self.A_B_dataset, len_dataset = data.make_zip_dataset(A_img_paths, B_img_paths, batch_size, load_size,
-                                                              crop_size, training=True, repeat=False,
-                                                              is_gray_scale=(color_depth == 1))
-        self.len_dataset = len_dataset
+        self.A_img_paths = py.glob(py.join(datasets_dir, dataset, 'trainA'), '*.{}'.format(image_ext))
+        self.B_img_paths = py.glob(py.join(datasets_dir, dataset, 'trainB'), '*.{}'.format(image_ext))
 
-        self.A2B_pool = data.ItemPool(pool_size)
-        self.B2A_pool = data.ItemPool(pool_size)
+        # summary
+        self.train_summary_writer = tf.summary.create_file_writer(py.join(self.output_dataset_dir, 'summaries', 'train'))
+        # save settings
 
-        A_img_paths_test = py.glob(py.join(datasets_dir, dataset, 'testA'), '*.{}'.format(image_ext))
-        B_img_paths_test = py.glob(py.join(datasets_dir, dataset, 'testB'), '*.{}'.format(image_ext))
-        A_B_dataset_test, _ = data.make_zip_dataset(A_img_paths_test, B_img_paths_test, batch_size, load_size,
-                                                    crop_size, training=False, repeat=True,
-                                                    is_gray_scale=(color_depth == 1))
-        self.test_iter = iter(A_B_dataset_test)
-
-        self.G_A2B = module.ResnetGenerator(input_shape=(crop_size, crop_size, color_depth), output_channels=color_depth)
-        self.G_B2A = module.ResnetGenerator(input_shape=(crop_size, crop_size, color_depth), output_channels=color_depth)
-
-        self.D_A = module.ConvDiscriminator(input_shape=(crop_size, crop_size, color_depth))
-        self.D_B = module.ConvDiscriminator(input_shape=(crop_size, crop_size, color_depth))
-
-        self.d_loss_fn, self.g_loss_fn = gan.get_adversarial_losses_fn(adversarial_loss_mode)
-        self.cycle_loss_fn = tf.losses.MeanAbsoluteError()
-        self.identity_loss_fn = tf.losses.MeanAbsoluteError()
-
-        self.G_lr_scheduler = module.LinearDecay(lr, epochs * len_dataset, epoch_decay * len_dataset)
-        self.D_lr_scheduler = module.LinearDecay(lr, epochs * len_dataset, epoch_decay * len_dataset)
-        self.G_optimizer = keras.optimizers.Adam(learning_rate=self.G_lr_scheduler, beta_1=beta_1)
-        self.D_optimizer = keras.optimizers.Adam(learning_rate=self.D_lr_scheduler, beta_1=beta_1)
-        # epoch counter
-
+    def set_checkpoints(self):
         self.ep_cnt = tf.Variable(initial_value=0, trainable=False, dtype=tf.int64)
-
         # checkpoint
         self.checkpoint = tl.Checkpoint(dict(G_A2B=self.G_A2B,
                                              G_B2A=self.G_B2A,
@@ -128,52 +113,84 @@ class CycleGAN:
                                              G_optimizer=self.G_optimizer,
                                              D_optimizer=self.D_optimizer,
                                              ep_cnt=self.ep_cnt),
-                                        py.join(output_dataset_dir, 'checkpoints'),
+                                        py.join(self.output_dataset_dir, 'checkpoints'),
                                         max_to_keep=5)
         try:  # restore checkpoint including the epoch counter
             self.checkpoint.restore().assert_existing_objects_matched()
         except Exception as e:
             self.logger.warn(e)
 
-        # summary
-        self.train_summary_writer = tf.summary.create_file_writer(py.join(output_dataset_dir, 'summaries', 'train'))
-        # save settings
+    def construct_model(self, crop_size, load_size):
+        self.A_B_dataset, len_dataset = data.make_zip_dataset(self.A_img_paths, self.B_img_paths, self.batch_size, load_size,
+                                                              crop_size, training=True, repeat=False,
+                                                              is_gray_scale=(self.color_depth == 1))
+        self.len_dataset = len_dataset
+
+        self.A2B_pool = data.ItemPool(self.pool_size)
+        self.B2A_pool = data.ItemPool(self.pool_size)
+        A_img_paths_test = py.glob(py.join(self.datasets_dir, self.dataset, 'testA'), '*.{}'.format(self.image_ext))
+        B_img_paths_test = py.glob(py.join(self.datasets_dir, self.dataset, 'testB'), '*.{}'.format(self.image_ext))
+        A_B_dataset_test, _ = data.make_zip_dataset(A_img_paths_test, B_img_paths_test, self.batch_size, load_size,
+                                                    crop_size, training=False, repeat=True,
+                                                    is_gray_scale=(self.color_depth == 1))
+        self.test_iter = iter(A_B_dataset_test)
+        self.G_A2B = module.ResnetGenerator(input_shape=(crop_size, crop_size, self.color_depth),
+                                            output_channels=self.color_depth)
+        self.G_B2A = module.ResnetGenerator(input_shape=(crop_size, crop_size, self.color_depth),
+                                            output_channels=self.color_depth)
+        self.D_A = module.ConvDiscriminator(input_shape=(crop_size, crop_size, self.color_depth))
+        self.D_B = module.ConvDiscriminator(input_shape=(crop_size, crop_size, self.color_depth))
+        self.d_loss_fn, self.g_loss_fn = gan.get_adversarial_losses_fn(self.adversarial_loss_mode)
+        self.cycle_loss_fn = tf.losses.MeanAbsoluteError()
+        self.identity_loss_fn = tf.losses.MeanAbsoluteError()
+        self.G_lr_scheduler = module.LinearDecay(self.lr, self.epochs * self.len_dataset, self.epoch_decay * self.len_dataset)
+        self.D_lr_scheduler = module.LinearDecay(self.lr, self.epochs * self.len_dataset, self.epoch_decay * self.len_dataset)
+        self.G_optimizer = keras.optimizers.Adam(learning_rate=self.G_lr_scheduler, beta_1=self.beta_1)
+        self.D_optimizer = keras.optimizers.Adam(learning_rate=self.D_lr_scheduler, beta_1=self.beta_1)
 
     def run(self, debug=False):
         # main loop
         with self.train_summary_writer.as_default():
-            image_buffers = []
-            image_buffers_test = []
-            for ep in tqdm.trange(self.epochs, desc='Epoch Loop'):
-                if ep < self.ep_cnt:
-                    continue
+            if self.progrssive:
+                load_size = crop_size = 16
+            self.construct_model(crop_size, load_size)
+            # epoch counter
+            self.set_checkpoints()
+            self.train(debug)
 
-                # update epoch counter
-                self.ep_cnt.assign_add(1)
+    def train(self, debug):
+        image_buffers = []
+        image_buffers_test = []
+        for ep in tqdm.trange(self.epochs, desc='Epoch Loop'):
+            if ep < self.ep_cnt:
+                continue
 
-                # train for an epoch
-                for A, B in tqdm.tqdm(self.A_B_dataset, desc='Inner Epoch Loop', total=self.len_dataset):
-                    G_loss_dict, D_loss_dict = self.train_step(A, B)
+            # update epoch counter
+            self.ep_cnt.assign_add(1)
 
-                    # # summary
-                    tl.summary(G_loss_dict, step=self.G_optimizer.iterations, name='G_losses')
-                    tl.summary(D_loss_dict, step=self.G_optimizer.iterations, name='D_losses')
-                    tl.summary({'learning rate': self.G_lr_scheduler.current_learning_rate},
-                               step=self.G_optimizer.iterations,
-                               name='learning rate')
+            # train for an epoch
+            for A, B in tqdm.tqdm(self.A_B_dataset, desc='Inner Epoch Loop', total=self.len_dataset):
+                G_loss_dict, D_loss_dict = self.train_step(A, B)
 
-                    # sample
-                    snapshot_period = min(10, (self.epochs // 20) + 1)
-                    if self.G_optimizer.iterations.numpy() % snapshot_period == 0:
-                        image_buffers.append(self.snapshot(A, B, 'train_iter-%09d.jpg', debug=debug))
-                        A_test, B_test = next(self.test_iter)
-                        image_buffers_test.append(self.snapshot(A_test, B_test, 'test_iter-%09d.jpg', debug=debug))
+                # # summary
+                tl.summary(G_loss_dict, step=self.G_optimizer.iterations, name='G_losses')
+                tl.summary(D_loss_dict, step=self.G_optimizer.iterations, name='D_losses')
+                tl.summary({'learning rate': self.G_lr_scheduler.current_learning_rate},
+                           step=self.G_optimizer.iterations,
+                           name='learning rate')
 
-                # save checkpoint
-                self.checkpoint.save(ep)
-            if image_buffers:
-                image_buffers.extend(image_buffers_test)
-                make_animation(image_buffers, 'animations/cycleGAN')
+                # sample
+                snapshot_period = min(10, (self.epochs // 20) + 1)
+                if self.G_optimizer.iterations.numpy() % snapshot_period == 0:
+                    image_buffers.append(self.snapshot(A, B, 'train_iter-%09d.jpg', debug=debug))
+                    A_test, B_test = next(self.test_iter)
+                    image_buffers_test.append(self.snapshot(A_test, B_test, 'test_iter-%09d.jpg', debug=debug))
+
+            # save checkpoint
+            self.checkpoint.save(ep)
+        if image_buffers:
+            image_buffers.extend(image_buffers_test)
+            make_animation(image_buffers, 'animations/cycleGAN')
 
     @tf.function
     def train_G(self, A, B):
@@ -224,7 +241,7 @@ class CycleGAN:
                                           mode=self.gradient_penalty_mode)
 
             D_loss = (A_d_loss + B2A_d_loss) + (B_d_loss + A2B_d_loss) + (
-                        D_A_gp + D_B_gp) * self.gradient_penalty_weight
+                    D_A_gp + D_B_gp) * self.gradient_penalty_weight
 
         D_grad = t.gradient(D_loss, self.D_A.trainable_variables + self.D_B.trainable_variables)
         self.D_optimizer.apply_gradients(zip(D_grad, self.D_A.trainable_variables + self.D_B.trainable_variables))
