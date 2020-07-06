@@ -3,15 +3,13 @@ import tensorflow_addons as tfa
 import tensorflow.keras as keras
 from keras import backend, Model, Input, Sequential
 from keras.optimizers import Adam
-from tensorflow.keras import layers
 
 # ==============================================================================
 # =                                  networks                                  =
 # ==============================================================================
 from keras.constraints import max_norm
 from keras.initializers import RandomNormal
-from keras.layers import UpSampling2D, LeakyReLU, Conv2D, Add, Dense, Reshape, AveragePooling2D, Flatten, \
-    Conv2DTranspose
+from keras.layers import UpSampling2D, LeakyReLU, Add, Dense, Reshape, AveragePooling2D, Flatten
 
 
 def _get_norm_layer(norm):
@@ -26,7 +24,7 @@ def _get_norm_layer(norm):
 
 
 # pixel-wise feature vector normalization layer
-class PixelNormalization(Layer):
+class PixelNormalization(keras.layers.Layer):
     # initialize the layer
     def __init__(self, **kwargs):
         super(PixelNormalization, self).__init__(**kwargs)
@@ -66,7 +64,7 @@ class WeightedSum(Add):
         return output
 
 
-class MinibatchStdev(layers.Layer):
+class MinibatchStdev(keras.layers.Layer):
     # initialize the layer
     def __init__(self, **kwargs):
         super(MinibatchStdev, self).__init__(**kwargs)
@@ -112,14 +110,14 @@ def add_generator_block(old_model):
     block_end = old_model.layers[-2].output
     # upsample, and define new block
     upsampling = UpSampling2D()(block_end)
-    g = layers(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(upsampling)
+    g = keras.layers(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(upsampling)
     g = PixelNormalization()(g)
     g = LeakyReLU(alpha=0.2)(g)
-    g = Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
+    g = keras.layers.Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
     g = PixelNormalization()(g)
     g = LeakyReLU(alpha=0.2)(g)
     # add new output layer
-    out_image = Conv2D(3, (1, 1), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
+    out_image = keras.layers.Conv2D(3, (1, 1), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
     # define model
     model1 = Model(old_model.input, out_image)
     # get the output layer from old model
@@ -151,15 +149,15 @@ def define_generator(latent_dim, n_blocks, in_dim=4):
     g = Dense(128 * in_dim * in_dim, kernel_initializer=init, kernel_constraint=const)(in_latent)
     g = Reshape((in_dim, in_dim, 128))(g)
     # conv 4x4, input block
-    g = Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
+    g = keras.layers.Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
     g = PixelNormalization()(g)
     g = LeakyReLU(alpha=0.2)(g)
     # conv 3x3
-    g = Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
+    g = keras.layers.Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
     g = PixelNormalization()(g)
     g = LeakyReLU(alpha=0.2)(g)
     # conv 1x1, output block
-    out_image = Conv2D(3, (1, 1), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
+    out_image = keras.layers.Conv2D(3, (1, 1), padding='same', kernel_initializer=init, kernel_constraint=const)(g)
     # define model
     model = Model(in_latent, out_image)
     # store model
@@ -186,12 +184,12 @@ def add_discriminator_block(old_model, n_input_layers=3):
     input_shape = (in_shape[-2].value * 2, in_shape[-2].value * 2, in_shape[-1].value)
     in_image = Input(shape=input_shape)
     # define new input processing layer
-    d = Conv2D(128, (1, 1), padding='same', kernel_initializer=init, kernel_constraint=const)(in_image)
+    d = keras.layers.Conv2D(128, (1, 1), padding='same', kernel_initializer=init, kernel_constraint=const)(in_image)
     d = LeakyReLU(alpha=0.2)(d)
     # define new block
-    d = Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(d)
+    d = keras.layers.Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(d)
     d = LeakyReLU(alpha=0.2)(d)
-    d = Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(d)
+    d = keras.layers.Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(d)
     d = LeakyReLU(alpha=0.2)(d)
     d = AveragePooling2D()(d)
     block_new = d
@@ -229,14 +227,14 @@ def define_discriminator(n_blocks, input_shape=(4, 4, 3)):
     # base model input
     in_image = Input(shape=input_shape)
     # conv 1x1
-    d = Conv2D(128, (1, 1), padding='same', kernel_initializer=init, kernel_constraint=const)(in_image)
+    d = keras.layers.Conv2D(128, (1, 1), padding='same', kernel_initializer=init, kernel_constraint=const)(in_image)
     d = LeakyReLU(alpha=0.2)(d)
     # conv 3x3 (output block)
     d = MinibatchStdev()(d)
-    d = Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(d)
+    d = keras.layers.Conv2D(128, (3, 3), padding='same', kernel_initializer=init, kernel_constraint=const)(d)
     d = LeakyReLU(alpha=0.2)(d)
     # conv 4x4
-    d = Conv2D(128, (4, 4), padding='same', kernel_initializer=init, kernel_constraint=const)(d)
+    d = keras.layers.Conv2D(128, (4, 4), padding='same', kernel_initializer=init, kernel_constraint=const)(d)
     d = LeakyReLU(alpha=0.2)(d)
     # dense output layer
     d = Flatten()(d)
@@ -294,12 +292,12 @@ def ResnetGenerator(input_shape=(256, 256, 3),
         h = x
 
         h = tf.pad(h, [[0, 0], [1, 1], [1, 1], [0, 0]], mode='REFLECT')
-        h = Conv2D(dim, 3, padding='valid', use_bias=False)(h)
+        h = keras.layers.Conv2D(dim, 3, padding='valid', use_bias=False)(h)
         h = Norm()(h)
         h = tf.nn.relu(h)
 
         h = tf.pad(h, [[0, 0], [1, 1], [1, 1], [0, 0]], mode='REFLECT')
-        h = Conv2D(dim, 3, padding='valid', use_bias=False)(h)
+        h = keras.layers.Conv2D(dim, 3, padding='valid', use_bias=False)(h)
         h = Norm()(h)
 
         return keras.layers.add([x, h])
@@ -309,14 +307,14 @@ def ResnetGenerator(input_shape=(256, 256, 3),
 
     # 1
     h = tf.pad(h, [[0, 0], [3, 3], [3, 3], [0, 0]], mode='REFLECT')
-    h = Conv2D(dim, 7, padding='valid', use_bias=False)(h)
+    h = keras.layers.Conv2D(dim, 7, padding='valid', use_bias=False)(h)
     h = Norm()(h)
     h = tf.nn.relu(h)
 
     # 2
     for _ in range(n_downsamplings):
         dim *= 2
-        h = Conv2D(dim, 3, strides=2, padding='same', use_bias=False)(h)
+        h = keras.layers.Conv2D(dim, 3, strides=2, padding='same', use_bias=False)(h)
         h = Norm()(h)
         h = tf.nn.relu(h)
 
@@ -327,13 +325,13 @@ def ResnetGenerator(input_shape=(256, 256, 3),
     # 4
     for _ in range(n_downsamplings):
         dim //= 2
-        h = Conv2DTranspose(dim, 3, strides=2, padding='same', use_bias=False)(h)
+        h = keras.layers.Conv2DTranspose(dim, 3, strides=2, padding='same', use_bias=False)(h)
         h = Norm()(h)
         h = tf.nn.relu(h)
 
     # 5
     h = tf.pad(h, [[0, 0], [3, 3], [3, 3], [0, 0]], mode='REFLECT')
-    h = Conv2D(output_channels, 7, padding='valid')(h)
+    h = keras.layers.Conv2D(output_channels, 7, padding='valid')(h)
     h = tf.tanh(h)
 
     return keras.Model(inputs=inputs, outputs=h)
@@ -350,23 +348,23 @@ def ConvDiscriminator(input_shape=(256, 256, 3),
     h = inputs = keras.Input(shape=input_shape)
 
     # 1
-    h = Conv2D(dim, 4, strides=2, padding='same')(h)
+    h = keras.layers.Conv2D(dim, 4, strides=2, padding='same')(h)
     h = tf.nn.leaky_relu(h, alpha=0.2)
 
     for _ in range(n_downsamplings - 1):
         dim = min(dim * 2, dim_ * 8)
-        h = Conv2D(dim, 4, strides=2, padding='same', use_bias=False)(h)
+        h = keras.layers.Conv2D(dim, 4, strides=2, padding='same', use_bias=False)(h)
         h = Norm()(h)
         h = tf.nn.leaky_relu(h, alpha=0.2)
 
     # 2
     dim = min(dim * 2, dim_ * 8)
-    h = Conv2D(dim, 4, strides=1, padding='same', use_bias=False)(h)
+    h = keras.layers.Conv2D(dim, 4, strides=1, padding='same', use_bias=False)(h)
     h = Norm()(h)
     h = tf.nn.leaky_relu(h, alpha=0.2)
 
     # 3
-    h = Conv2D(1, 4, strides=1, padding='same')(h)
+    h = keras.layers.Conv2D(1, 4, strides=1, padding='same')(h)
 
     return keras.Model(inputs=inputs, outputs=h)
 

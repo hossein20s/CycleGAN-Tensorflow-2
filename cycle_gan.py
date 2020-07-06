@@ -37,7 +37,7 @@ class CycleGAN:
                  crop_size=256,
                  load_size=286,
                  batch_size=0,
-                 adversarial_loss_mode="wgan",  # ['gan', 'hinge_v1', 'hinge_v2', 'lsgan', 'wgan']
+                 adversarial_loss_mode="lsgan",  # ['gan', 'hinge_v1', 'hinge_v2', 'lsgan', 'wgan']
                  lr=0.0002,
                  gradient_penalty_mode='none',  # ['none', 'dragan', 'wgan-gp'])
                  gradient_penalty_weight=10.0,
@@ -51,6 +51,7 @@ class CycleGAN:
 
         if batch_size == 0:
             batch_size = 1  # later figure out what to do
+        epoch_decay = min(epoch_decay, epochs//2)
 
         self.output_dataset_dir = py.join(output_dir, dataset)
         py.mkdir(self.output_dataset_dir)
@@ -96,12 +97,30 @@ class CycleGAN:
         self.progrssive = progrssive
         self.lr = lr
 
+        self.crop_size = crop_size
+        self.load_size = load_size
+
         self.A_img_paths = py.glob(py.join(datasets_dir, dataset, 'trainA'), '*.{}'.format(image_ext))
         self.B_img_paths = py.glob(py.join(datasets_dir, dataset, 'trainB'), '*.{}'.format(image_ext))
 
         # summary
         self.train_summary_writer = tf.summary.create_file_writer(py.join(self.output_dataset_dir, 'summaries', 'train'))
         # save settings
+
+    def run(self, debug=False):
+        # main loop
+        with self.train_summary_writer.as_default():
+
+            if self.progrssive:
+                # for load_size in (16,): # , 32, 64, 128, 256):
+                crop_size = load_size = 16
+                self.construct_model(crop_size, load_size)
+                self.set_checkpoints()
+                self.train(debug)
+            else:
+                self.construct_model(self.crop_size, self.load_size)
+                self.set_checkpoints()
+                self.train(debug)
 
     def set_checkpoints(self):
         self.ep_cnt = tf.Variable(initial_value=0, trainable=False, dtype=tf.int64)
@@ -148,16 +167,6 @@ class CycleGAN:
         self.G_optimizer = keras.optimizers.Adam(learning_rate=self.G_lr_scheduler, beta_1=self.beta_1)
         self.D_optimizer = keras.optimizers.Adam(learning_rate=self.D_lr_scheduler, beta_1=self.beta_1)
 
-    def run(self, debug=False):
-        # main loop
-        with self.train_summary_writer.as_default():
-            if self.progrssive:
-                for load_size in (16, 32, 64, 128, 256):
-                    crop_size = load_size
-                    self.construct_model(crop_size, load_size)
-                    # epoch counter
-                    self.set_checkpoints()
-                    self.train(debug)
 
     def train(self, debug):
         image_buffers = []
@@ -181,7 +190,7 @@ class CycleGAN:
                            name='learning rate')
 
                 # sample
-                snapshot_period = min(10, (self.epochs // 20) + 1)
+                snapshot_period = min(10, (self.epochs // 70) + 1)
                 if self.G_optimizer.iterations.numpy() % snapshot_period == 0:
                     image_buffers.append(self.snapshot(A, B, 'train_iter-%09d.jpg', debug=debug))
                     A_test, B_test = next(self.test_iter)
