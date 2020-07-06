@@ -5,6 +5,7 @@ import logging.config
 from argparse import Namespace
 
 import numpy as np
+import skimage
 import tensorflow as tf
 import tensorflow.keras as keras
 import tqdm
@@ -19,6 +20,7 @@ import tf2lib as tl
 # ==============================================================================
 # =                                 train step                                 =
 # ==============================================================================
+from imlib import im2uint
 from utils import make_animation
 
 
@@ -34,16 +36,20 @@ class CycleGAN:
                  image_ext="png",
                  crop_size=256,
                  load_size=286,
-                 batch_size=1,
-                 adversarial_loss_mode="lsgan",  # ['gan', 'hinge_v1', 'hinge_v2', 'lsgan', 'wgan']
+                 batch_size=0,
+                 adversarial_loss_mode="wgan",  # ['gan', 'hinge_v1', 'hinge_v2', 'lsgan', 'wgan']
                  lr=0.0002,
                  gradient_penalty_mode='none',  # ['none', 'dragan', 'wgan-gp'])
                  gradient_penalty_weight=10.0,
                  cycle_loss_weight=0.0,
                  identity_loss_weight=0.0,
-                 beta_1=0.5):
+                 beta_1=0.5,
+                 color_depth=1):
         logging.config.fileConfig(fname='log.conf')
         self.logger = logging.getLogger('dev')
+
+        if batch_size == 0:
+            batch_size = 1  # later figure out what to do
 
         output_dataset_dir = py.join(output_dir, dataset)
         py.mkdir(output_dataset_dir)
@@ -64,7 +70,8 @@ class CycleGAN:
             gradient_penalty_weight=gradient_penalty_weight,
             cycle_loss_weight=cycle_loss_weight,
             identity_loss_weight=identity_loss_weight,
-            beta_1=beta_1)
+            beta_1=beta_1,
+            color_depth=color_depth)
                         )
         self.sample_dir = py.join(output_dataset_dir, 'samples_training')
         py.mkdir(self.sample_dir)
@@ -76,11 +83,13 @@ class CycleGAN:
         self.gradient_penalty_weight = gradient_penalty_weight
         self.cycle_loss_weight = cycle_loss_weight
         self.identity_loss_weight = identity_loss_weight
+        self.color_depth = color_depth
 
         A_img_paths = py.glob(py.join(datasets_dir, dataset, 'trainA'), '*.{}'.format(image_ext))
         B_img_paths = py.glob(py.join(datasets_dir, dataset, 'trainB'), '*.{}'.format(image_ext))
         self.A_B_dataset, len_dataset = data.make_zip_dataset(A_img_paths, B_img_paths, batch_size, load_size,
-                                                              crop_size, training=True, repeat=False)
+                                                              crop_size, training=True, repeat=False,
+                                                              is_gray_scale=(color_depth == 1))
         self.len_dataset = len_dataset
 
         self.A2B_pool = data.ItemPool(pool_size)
@@ -89,14 +98,15 @@ class CycleGAN:
         A_img_paths_test = py.glob(py.join(datasets_dir, dataset, 'testA'), '*.{}'.format(image_ext))
         B_img_paths_test = py.glob(py.join(datasets_dir, dataset, 'testB'), '*.{}'.format(image_ext))
         A_B_dataset_test, _ = data.make_zip_dataset(A_img_paths_test, B_img_paths_test, batch_size, load_size,
-                                                    crop_size, training=False, repeat=True)
+                                                    crop_size, training=False, repeat=True,
+                                                    is_gray_scale=(color_depth == 1))
         self.test_iter = iter(A_B_dataset_test)
 
-        self.G_A2B = module.ResnetGenerator(input_shape=(crop_size, crop_size, 3))
-        self.G_B2A = module.ResnetGenerator(input_shape=(crop_size, crop_size, 3))
+        self.G_A2B = module.ResnetGenerator(input_shape=(crop_size, crop_size, color_depth), output_channels=color_depth)
+        self.G_B2A = module.ResnetGenerator(input_shape=(crop_size, crop_size, color_depth), output_channels=color_depth)
 
-        self.D_A = module.ConvDiscriminator(input_shape=(crop_size, crop_size, 3))
-        self.D_B = module.ConvDiscriminator(input_shape=(crop_size, crop_size, 3))
+        self.D_A = module.ConvDiscriminator(input_shape=(crop_size, crop_size, color_depth))
+        self.D_B = module.ConvDiscriminator(input_shape=(crop_size, crop_size, color_depth))
 
         self.d_loss_fn, self.g_loss_fn = gan.get_adversarial_losses_fn(adversarial_loss_mode)
         self.cycle_loss_fn = tf.losses.MeanAbsoluteError()
@@ -129,7 +139,7 @@ class CycleGAN:
         self.train_summary_writer = tf.summary.create_file_writer(py.join(output_dataset_dir, 'summaries', 'train'))
         # save settings
 
-    def run(self):
+    def run(self, debug=False):
         # main loop
         with self.train_summary_writer.as_default():
             image_buffers = []
@@ -153,11 +163,11 @@ class CycleGAN:
                                name='learning rate')
 
                     # sample
-                    snapshot_period = min(10, (self.epochs // 50) + 1)
+                    snapshot_period = min(10, (self.epochs // 20) + 1)
                     if self.G_optimizer.iterations.numpy() % snapshot_period == 0:
-                        image_buffers.append(self.snapshot(A, B, debug=True))
+                        image_buffers.append(self.snapshot(A, B, 'train_iter-%09d.jpg', debug=debug))
                         A_test, B_test = next(self.test_iter)
-                        image_buffers_test.append(self.snapshot(A_test, B_test, debug=True))
+                        image_buffers_test.append(self.snapshot(A_test, B_test, 'test_iter-%09d.jpg', debug=debug))
 
                 # save checkpoint
                 self.checkpoint.save(ep)
@@ -213,7 +223,8 @@ class CycleGAN:
             D_B_gp = gan.gradient_penalty(functools.partial(self.D_B, training=True), B, A2B,
                                           mode=self.gradient_penalty_mode)
 
-            D_loss = (A_d_loss + B2A_d_loss) + (B_d_loss + A2B_d_loss) + (D_A_gp + D_B_gp) * self.gradient_penalty_weight
+            D_loss = (A_d_loss + B2A_d_loss) + (B_d_loss + A2B_d_loss) + (
+                        D_A_gp + D_B_gp) * self.gradient_penalty_weight
 
         D_grad = t.gradient(D_loss, self.D_A.trainable_variables + self.D_B.trainable_variables)
         self.D_optimizer.apply_gradients(zip(D_grad, self.D_A.trainable_variables + self.D_B.trainable_variables))
@@ -242,12 +253,15 @@ class CycleGAN:
         B2A2B = self.G_A2B(B2A, training=False)
         return A2B, B2A, A2B2A, B2A2B
 
-    def snapshot(self, A, B, debug=False):
+    def snapshot(self, A, B, image_file_name, debug=False):
         A2B, B2A, A2B2A, B2A2B = self.sample(A, B)
         img = im.immerge(np.concatenate([A, A2B, A2B2A, B, B2A, B2A2B], axis=0), n_rows=2)
-        im.imwrite(img, py.join(self.sample_dir, 'iter-%09d.jpg' % self.G_optimizer.iterations.numpy()))
-        pyplot.imshow(img)
+        im.imwrite(img, py.join(self.sample_dir, image_file_name % self.G_optimizer.iterations.numpy()))
         buffer = io.BytesIO()
+        if self.color_depth == 1:
+            pyplot.imshow(img.reshape(img.shape[0], img.shape[1]), cmap='gray')
+        else:
+            pyplot.imshow(img)
         pyplot.savefig(buffer, format='png')
         if debug:
             buffer.seek(0)
