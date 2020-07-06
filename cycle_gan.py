@@ -152,11 +152,12 @@ class CycleGAN:
         # main loop
         with self.train_summary_writer.as_default():
             if self.progrssive:
-                load_size = crop_size = 16
-            self.construct_model(crop_size, load_size)
-            # epoch counter
-            self.set_checkpoints()
-            self.train(debug)
+                for load_size in (16, 32, 64, 128, 256):
+                    crop_size = load_size
+                    self.construct_model(crop_size, load_size)
+                    # epoch counter
+                    self.set_checkpoints()
+                    self.train(debug)
 
     def train(self, debug):
         image_buffers = []
